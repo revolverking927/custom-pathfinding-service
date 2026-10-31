@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Path Viewer</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1c2026; --muted: #6a7280; --border: #d5d9e0;
+    --field: #ffffff; --grid: #dfe3ea; --grid-major: #b9c0cc; --axis: #8a94a6;
+    --robot: #2563eb; --robot-fill: rgba(37, 99, 235, .18); --trail: #2563eb;
+    --target: #e11d48; --path: #d97706; --ok: #16a34a; --bad: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151a; --panel: #1b2027; --text: #e6e9ef; --muted: #8b95a5; --border: #2c333d;
+      --field: #161a20; --grid: #262d37; --grid-major: #3b4552; --axis: #6b7686;
+      --robot: #60a5fa; --robot-fill: rgba(96, 165, 250, .22); --trail: #60a5fa;
+      --target: #fb7185; --path: #fbbf24; --ok: #4ade80; --bad: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 10px 16px;
+           background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  input[type=text], input[type=number], select, button {
+    font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 8px; }
+  input[type=text] { width: 270px; max-width: 100%; }
+  input[type=number] { width: 64px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--axis); }
+  .status { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; color: var(--muted); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); }
+  .dot.on { background: var(--ok); }
+  main { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; align-items: flex-start; }
+  .field-wrap { flex: 1 1 520px; min-width: 0; max-width: 820px; }
+  canvas { width: 100%; aspect-ratio: 1; display: block; background: var(--field);
+           border: 1px solid var(--border); border-radius: 8px; }
+  .hover { color: var(--muted); margin-top: 6px; min-height: 20px; font-variant-numeric: tabular-nums; }
+  aside { flex: 0 1 300px; min-width: 240px; background: var(--panel); border: 1px solid var(--border);
+          border-radius: 8px; padding: 12px 14px; }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 6px; }
+  aside h2:first-child { margin-top: 0; }
+  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-variant-numeric: tabular-nums; }
+  dt { color: var(--muted); }
+  dd { margin: 0; text-align: right; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Path Viewer</h1>
+  <label>Robot URL <input id="url" type="text" value="http://192.168.43.1:8765/state"></label>
+  <label>Units
+    <select id="unitSel">
+      <option value="auto">match robot</option>
+      <option value="INCHES">inches</option>
+      <option value="TILES">tiles</option>
+    </select>
+  </label>
+  <label>Robot size (in) <input id="size" type="number" value="18" min="4" max="40"></label>
+  <button id="clear">Clear trail</button>
+  <span class="status"><span class="dot" id="dot"></span><span id="statusText">Connecting…</span></span>
+</header>
+<main>
+  <div class="field-wrap">
+    <canvas id="cv"></canvas>
+    <div class="hover" id="hover">Hover the field to read grid coordinates.</div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--robot)"></i>Robot + trail</span>
+      <span><i class="sw" style="background:var(--target)"></i>Target</span>
+      <span><i class="sw" style="background:var(--path)"></i>Waypoints</span>
+      <span>+x forward (up), +y left, heading CCW</span>
+    </div>
+  </div>
+  <aside>
+    <h2>Pose</h2>
+    <dl>
+      <dt>x</dt><dd id="px">–</dd>
+      <dt>y</dt><dd id="py">–</dd>
+      <dt>heading</dt><dd id="ph">–</dd>
+    </dl>
+    <h2>Following</h2>
+    <dl>
+      <dt>mode</dt><dd id="mode">–</dd>
+      <dt>state</dt><dd id="busy">–</dd>
+      <dt>position error</dt><dd id="pe">–</dd>
+      <dt>heading error</dt><dd id="he">–</dd>
+      <dt>power f / s / t</dt><dd id="pw">–</dd>
+      <dt>speed</dt><dd id="sp">–</dd>
+    </dl>
+    <h2>Gains</h2>
+    <dl id="gains"></dl>
+  </aside>
+</main>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const cv = $('cv'), ctx = cv.getContext('2d');
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const TILE = 24;
+
+  let state = null, trail = [], connected = false, hoverPt = null, lastGood = 0;
+
+  const unit = () => {
+    const sel = $('unitSel').value;
+    return sel === 'auto' ? (state ? state.unit : 'INCHES') : sel;
+  };
+  const toUnit = inches => unit() === 'TILES' ? inches / TILE : inches;
+  const fmt = v => toUnit(v).toFixed(unit() === 'TILES' ? 2 : 1);
+  const unitLabel = () => unit() === 'TILES' ? 'tiles' : 'in';
+  const fieldSize = () => (state && state.fieldSize) || 144;
+
+  // ---- Networking ----
+  let polling = false;
+  async function poll() {
+    if (polling) return;
+    polling = true;
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 800);
+      const res = await fetch($('url').value, { signal: ctl.signal, cache: 'no-store' });
+      clearTimeout(t);
+      const data = await res.json();
+      if (data && data.pose) {
+        state = data;
+        connected = true;
+        lastGood = Date.now();
+        const p = data.pose, l = trail[trail.length - 1];
+        if (!l || Math.hypot(p.x - l.x, p.y - l.y) > 0.25) {
+          trail.push({ x: p.x, y: p.y });
+          if (trail.length > 1500) trail.shift();
+        }
+      }
+    } catch (e) {
+      if (Date.now() - lastGood > 1500) connected = false;
+    }
+    polling = false;
+    updatePanel();
+  }
+  setInterval(poll, 50);
+
+  // ---- Panel ----
+  function updatePanel() {
+    $('dot').classList.toggle('on', connected);
+    $('statusText').textContent = connected ? 'Connected' : 'Not connected – join the Control Hub Wi-Fi and run Pathing Tuner';
+    if (!state) return;
+    const p = state.pose, v = state.velocity || { x: 0, y: 0 };
+    $('px').textContent = fmt(p.x) + ' ' + unitLabel();
+    $('py').textContent = fmt(p.y) + ' ' + unitLabel();
+    $('ph').textContent = (p.h * 180 / Math.PI).toFixed(1) + '°';
+    $('mode').textContent = state.mode;
+    $('busy').textContent = state.busy ? 'moving' : 'idle';
+    $('pe').textContent = state.busy ? fmt(state.posError) + ' ' + unitLabel() : '–';
+    $('he').textContent = state.busy ? (state.headError * 180 / Math.PI).toFixed(1) + '°' : '–';
+    const w = state.power || { f: 0, s: 0, t: 0 };
+    $('pw').textContent = [w.f, w.s, w.t].map(n => n.toFixed(2)).join(' / ');
+    $('sp').textContent = fmt(Math.hypot(v.x, v.y)) + ' ' + unitLabel() + '/s';
+    const g = state.gains || {};
+    $('gains').innerHTML = Object.keys(g).map(k => `<dt>${k}</dt><dd>${(+g[k]).toFixed(4)}</dd>`).join('');
+  }
+
+  // ---- Drawing ----
+  // Field coordinates: x forward -> screen up, y left -> screen left, origin at field center.
+  let W = 0, scale = 1;
+  const sx = y => W / 2 - y * scale;
+  const sy = x => W / 2 - x * scale;
+
+  function resize() {
+    const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(r.width * dpr);
+    cv.height = Math.round(r.width * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    W = r.width;
+  }
+  window.addEventListener('resize', resize);
+
+  function drawGrid() {
+    const half = fieldSize() / 2;
+    scale = W / fieldSize();
+    ctx.lineWidth = 1;
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.fillStyle = css('--muted');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const step = unit() === 'TILES' ? TILE : TILE / 2; // minor lines: every half tile in inches mode
+    for (let v = -half; v <= half + 0.01; v += step) {
+      const major = Math.abs(v % TILE) < 0.01;
+      ctx.strokeStyle = Math.abs(v) < 0.01 ? css('--axis') : major ? css('--grid-major') : css('--grid');
+      ctx.beginPath(); ctx.moveTo(sx(v), 0); ctx.lineTo(sx(v), W); ctx.stroke();   // y = v
+      ctx.beginPath(); ctx.moveTo(0, sy(v)); ctx.lineTo(W, sy(v)); ctx.stroke();   // x = v
+    }
+    for (let v = -half + TILE; v < half - 0.01; v += TILE) {
+      const label = fmt(v);
+      ctx.fillText(label, sx(v), W - 8);          // y labels along the bottom (y grows leftward)
+      ctx.textAlign = 'left';
+      ctx.fillText(label, 4, sy(v));              // x labels along the left edge
+      ctx.textAlign = 'center';
+    }
+  }
+
+  function drawPoseMarker(p, color, size, filled) {
+    const px = sx(p.y), py = sy(p.x), s = size * scale / 2;
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(-p.h); // heading CCW; screen up is +x
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    if (filled) { ctx.fillStyle = css('--robot-fill'); ctx.fillRect(-s, -s, 2 * s, 2 * s); }
+    ctx.strokeRect(-s, -s, 2 * s, 2 * s);
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -s * 1.5); ctx.stroke(); // heading arrow (front = up)
+    ctx.beginPath(); ctx.moveTo(-s * .3, -s * 1.1); ctx.lineTo(0, -s * 1.5); ctx.lineTo(s * .3, -s * 1.1); ctx.stroke();
+    ctx.restore();
+  }
+
+  function render() {
+    ctx.clearRect(0, 0, W, W);
+    drawGrid();
+    const size = +$('size').value || 18;
+
+    if (trail.length > 1) {
+      ctx.strokeStyle = css('--trail'); ctx.globalAlpha = .45; ctx.lineWidth = 2;
+      ctx.beginPath();
+      trail.forEach((p, i) => i ? ctx.lineTo(sx(p.y), sy(p.x)) : ctx.moveTo(sx(p.y), sy(p.x)));
+      ctx.stroke(); ctx.globalAlpha = 1;
+    }
+    if (state) {
+      const wps = state.waypoints || [];
+      if (wps.length) {
+        ctx.strokeStyle = css('--path'); ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        wps.forEach((p, i) => i ? ctx.lineTo(sx(p.y), sy(p.x)) : ctx.moveTo(sx(p.y), sy(p.x)));
+        ctx.stroke(); ctx.setLineDash([]);
+        ctx.font = '11px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        wps.forEach((p, i) => {
+          ctx.fillStyle = css('--path');
+          ctx.beginPath(); ctx.arc(sx(p.y), sy(p.x), 8, 0, 7); ctx.fill();
+          ctx.fillStyle = '#000'; ctx.fillText(i + 1, sx(p.y), sy(p.x));
+        });
+      }
+      if (state.target) drawPoseMarker(state.target, css('--target'), size, false);
+      drawPoseMarker(state.pose, css('--robot'), size, true);
+    }
+    requestAnimationFrame(render);
+  }
+
+  // ---- Interaction ----
+  cv.addEventListener('mousemove', e => {
+    const r = cv.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width * W, py = (e.clientY - r.top) / r.height * W;
+    const y = (W / 2 - px) / scale, x = (W / 2 - py) / scale;
+    hoverPt = { x, y };
+    $('hover').textContent = `x ${fmt(x)} ${unitLabel()}, y ${fmt(y)} ${unitLabel()}`;
+  });
+  cv.addEventListener('mouseleave', () => { hoverPt = null; $('hover').textContent = 'Hover the field to read grid coordinates.'; });
+  $('clear').onclick = () => { trail = []; };
+  $('unitSel').onchange = updatePanel;
+
+  resize();
+  render();
+})();
+</script>
+</body>
+</html>
