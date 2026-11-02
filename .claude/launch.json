@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "path-viewer",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["-e", "const h=require('http'),f=require('fs');h.createServer((q,r)=>{f.readFile('PathViewer/viewer.html',(e,d)=>{r.writeHead(e?500:200,{'Content-Type':'text/html'});r.end(e?String(e):d)})}).listen(8123)"],
+      "port": 8123
+    }
+  ]
+}
